@@ -11,12 +11,12 @@ class Request:
 class Response:
     id: int
     result: str
-    worker_id: int
+    workerId: int
     latency: float
     success: bool = True
     
 @dataclass
 class WorkerStatus:
     id: int
-    is_alive: bool = True
-    active_tasks: int = 0
+    isAlive: bool = True
+    activeTasks: int = 0
