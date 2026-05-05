@@ -1,12 +1,16 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 from common.config import MAX_RETRIES
 from common.schemas import Response
 from common.utils import current_time, calculate_latency
 
 
 class Scheduler:
-    def __init__(self, loadBalancer, workerManager):
+    def __init__(self, loadBalancer, workerManager, maxThreads=10):
         self.loadBalancer = loadBalancer
         self.workerManager = workerManager
+        self.executor = ThreadPoolExecutor(max_workers=maxThreads)
 
         self.activeTasks = {}
         self.completedTasks = {}
@@ -17,8 +21,12 @@ class Scheduler:
         self.failedRequests = 0
         self.totalLatency = 0.0
 
-    def handleRequest(self, request):
-        self.totalRequests += 1
+        self.lock = asyncio.Lock()
+
+    async def handleRequestAsync(self, request):
+        async with self.lock:
+            self.totalRequests += 1
+
         startTime = current_time()
         latestError = None
 
@@ -26,10 +34,17 @@ class Scheduler:
             worker = None
 
             try:
-                worker = self.assignWorker(request)
+                worker = self.assignWorker()
                 self.markSchedulerTaskStarted(worker, request)
 
-                response = worker.process(request)
+                loop = asyncio.get_running_loop()
+
+                response = await loop.run_in_executor(
+                    self.executor,
+                    worker.process,
+                    request
+                )
+
                 response.latency = calculate_latency(startTime)
                 response.workerId = worker.id
                 response.success = True
@@ -42,13 +57,16 @@ class Scheduler:
             except Exception as e:
                 latestError = str(e)
 
+                self.activeTasks.pop(request.id, None)
+
                 if worker is not None:
                     self.workerManager.markWorkerTaskCompleted(worker.id)
                     self.workerManager.markWorkerDead(worker.id)
 
                 self.failedTasks[request.id] = (latestError, attempt + 1)
 
-        self.failedRequests += 1
+        async with self.lock:
+            self.failedRequests += 1
 
         return Response(
             id=request.id,
@@ -58,7 +76,7 @@ class Scheduler:
             success=False
         )
 
-    def assignWorker(self, request):
+    def assignWorker(self):
         availableWorkers = self.workerManager.getAvailableWorkers()
 
         if not availableWorkers:
@@ -69,7 +87,7 @@ class Scheduler:
     def markSchedulerTaskStarted(self, worker, request):
         self.activeTasks[request.id] = {
             "workerId": worker.id,
-            "startTime": current_time(),
+            "startTime": current_time()
         }
 
         self.workerManager.markWorkerTaskStarted(worker.id)
@@ -97,3 +115,6 @@ class Scheduler:
             "averageLatency": averageLatency,
             "statusReport": self.workerManager.getStatusReport()
         }
+
+    def handleRequest(self, request):
+        return asyncio.run(self.handleRequestAsync(request))

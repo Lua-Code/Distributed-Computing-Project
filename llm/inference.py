@@ -1,4 +1,3 @@
-
 from transformers import pipeline
 import threading
 
@@ -14,43 +13,47 @@ class LLM:
         )
         print("[LLM] Model loaded")
 
-    def _build_prompt(self, query, context):
+    def _buildPrompt(self, query, context):
         if context:
             return f"Context:\n{context}\n\nUser: {query}\nAI:"
         return f"User: {query}\nAI:"
 
     def generate(self, query, context=""):
-        prompt = self._build_prompt(query, context)
+        prompt = self._buildPrompt(query, context)
 
         with self.lock:
             result = self.generator(
                 prompt,
-                max_length=120,
+                max_new_tokens=80,
                 temperature=0.7,
-                num_return_sequences=1
+                do_sample=True,
+                num_return_sequences=1,
+                pad_token_id=self.generator.tokenizer.eos_token_id
             )
 
         text = result[0]["generated_text"]
 
-        # remove prompt from output
         if text.startswith(prompt):
             text = text[len(prompt):]
 
-        return text.strip()
+        stopWords = ["User:", "AI:", "Context:"]
+        for stopWord in stopWords:
+            if stopWord in text:
+                text = text.split(stopWord)[0]
 
+        return text.strip()
 
 
 _llm = None
 
 
-def get_llm():
+def getLlm():
     global _llm
     if _llm is None:
         _llm = LLM()
     return _llm
 
 
-
-def run_llm(query, context=""):
-    llm = get_llm()
+def runLlm(query, context=""):
+    llm = getLlm()
     return llm.generate(query, context)

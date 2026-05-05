@@ -1,41 +1,24 @@
-import time
-from llm.inference import run_llm
-from rag.retriever import retrieve_context
-from common.schemas import Response
+from workers.task_executor import TaskExecutor
 
 
 class Worker:
-    def __init__(self, worker_id):
-        self.worker_id = worker_id
-        self.is_alive = True
-        self.current_tasks = 0
+    def __init__(self, id, maxTasks=5):
+        self.id = id
+        self.isAlive = True
+        self.activeTasks = 0
+        self.maxTasks = maxTasks
+        self.taskExecutor = TaskExecutor(id)
 
     def process(self, request):
-        if not self.is_alive:
-            raise Exception(f"Worker {self.worker_id} is down")
+        if not self.isAlive:
+            raise Exception(f"Worker {self.id} is down")
 
-        self.current_tasks += 1
-        start_time = time.time()
-
-        try:
-            print(f"[Worker {self.worker_id}] Processing request {request.id}")
-
-            context = retrieve_context(request.query)
-            result = run_llm(request.query, context)
-
-            latency = time.time() - start_time
-
-            return Response(
-                id=request.id,
-                result=result,
-                latency=latency
-            )
-
-        finally:
-            self.current_tasks -= 1
+        print(f"[Worker {self.id}] Processing request {request.id}")
+        return self.taskExecutor.execute(request)
 
     def fail(self):
-        self.is_alive = False
+        self.isAlive = False
 
     def recover(self):
-        self.is_alive = True
+        self.isAlive = True
+        self.activeTasks = 0
