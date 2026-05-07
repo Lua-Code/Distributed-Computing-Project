@@ -34,8 +34,8 @@ class Scheduler:
             worker = None
 
             try:
-                worker = self.assignWorker()
-                self.markSchedulerTaskStarted(worker, request)
+                worker = await self.assignWorkerAsync()
+                await self.markSchedulerTaskStarted(worker, request)
 
                 loop = asyncio.get_running_loop()
 
@@ -49,21 +49,21 @@ class Scheduler:
                 response.workerId = worker.id
                 response.success = True
 
-                self.markSchedulerTaskCompleted(request, response)
-                self.workerManager.markWorkerTaskCompleted(worker.id)
+                await self.markSchedulerTaskCompleted(request, response)
+                await self.markWorkerTaskCompleted(worker.id)
 
                 return response
 
             except Exception as e:
                 latestError = str(e)
 
-                self.activeTasks.pop(request.id, None)
+                async with self.lock:
+                    self.activeTasks.pop(request.id, None)
+                    self.failedTasks[f"{request.id}-attempt-{attempt + 1}"] = latestError
 
                 if worker is not None:
-                    self.workerManager.markWorkerTaskCompleted(worker.id)
+                    await self.markWorkerTaskCompleted(worker.id)
                     self.workerManager.markWorkerDead(worker.id)
-
-                self.failedTasks[request.id] = (latestError, attempt + 1)
 
         async with self.lock:
             self.failedRequests += 1
@@ -76,27 +76,50 @@ class Scheduler:
             success=False
         )
 
-    def assignWorker(self):
+    async def assignWorkerAsync(self):
         availableWorkers = self.workerManager.getAvailableWorkers()
 
-        if not availableWorkers:
+        healthyWorkers = []
+
+        for worker in availableWorkers:
+            if hasattr(worker, "healthCheck"):
+                loop = asyncio.get_running_loop()
+                isHealthy = await loop.run_in_executor(
+                    self.executor,
+                    worker.healthCheck
+                )
+
+                if isHealthy:
+                    healthyWorkers.append(worker)
+                else:
+                    self.workerManager.markWorkerDead(worker.id)
+            else:
+                healthyWorkers.append(worker)
+
+        if not healthyWorkers:
             raise ValueError("No available workers to assign :(")
 
-        return self.loadBalancer.selectWorker(availableWorkers)
+        return self.loadBalancer.selectWorker(healthyWorkers)
 
-    def markSchedulerTaskStarted(self, worker, request):
-        self.activeTasks[request.id] = {
-            "workerId": worker.id,
-            "startTime": current_time()
-        }
+    async def markSchedulerTaskStarted(self, worker, request):
+        async with self.lock:
+            self.activeTasks[request.id] = {
+                "workerId": worker.id,
+                "startTime": current_time()
+            }
 
-        self.workerManager.markWorkerTaskStarted(worker.id)
+            self.workerManager.markWorkerTaskStarted(worker.id)
 
-    def markSchedulerTaskCompleted(self, request, response):
-        self.activeTasks.pop(request.id, None)
-        self.completedTasks[request.id] = response
-        self.successfulRequests += 1
-        self.totalLatency += response.latency
+    async def markSchedulerTaskCompleted(self, request, response):
+        async with self.lock:
+            self.activeTasks.pop(request.id, None)
+            self.completedTasks[request.id] = response
+            self.successfulRequests += 1
+            self.totalLatency += response.latency
+
+    async def markWorkerTaskCompleted(self, workerId):
+        async with self.lock:
+            self.workerManager.markWorkerTaskCompleted(workerId)
 
     def getMetrics(self):
         averageLatency = (
@@ -111,10 +134,19 @@ class Scheduler:
             "failedRequests": self.failedRequests,
             "activeTasks": len(self.activeTasks),
             "completedTasks": len(self.completedTasks),
-            "failedTasks": len(self.failedTasks),
+            "failedAttempts": len(self.failedTasks),
             "averageLatency": averageLatency,
             "statusReport": self.workerManager.getStatusReport()
         }
 
     def handleRequest(self, request):
-        return asyncio.run(self.handleRequestAsync(request))
+        try:
+            loop = asyncio.get_running_loop()
+            raise RuntimeError(
+                "handleRequest() cannot be used inside an active event loop. "
+                "Use await handleRequestAsync(request) instead."
+            )
+        except RuntimeError as error:
+            if "no running event loop" in str(error).lower():
+                return asyncio.run(self.handleRequestAsync(request))
+            raise
