@@ -27,5 +27,5 @@ USE_RAG = True
 SIMULATED_PROCESSING_TIME = 2
 
 WORKER_URLS = [
-    "http://192.168.1.25:8001"
+    "http://192.168.100.24:8001"
 ]

@@ -1,120 +1,67 @@
-import time
 import asyncio
 
-from common.schemas import Request
 from master.scheduler import Scheduler
 from master.worker_manager import WorkerManager
 from lb.load_balancer import LoadBalancer
-from workers.worker import Worker
-
-from rag.ingestion import ingestDocuments
-from rag.vector_store import vectorStore
-
-
-# ---------------- RAG SETUP ----------------
-def setupRag():
-    loaded = vectorStore.load()
-
-    if loaded:
-        print("[RAG] Loaded existing VectorDB")
-        return
-
-    print("[RAG] No VectorDB found → ingesting...")
-
-    documents = [
-        "Load balancing distributes requests across workers.",
-        "Fault tolerance retries failed tasks on healthy workers.",
-        "RAG retrieves relevant context for LLM responses.",
-        "Scheduler assigns tasks and monitors workers.",
-        "Workers process requests in parallel."
-    ]
-
-    ingestDocuments(documents)
-    print("[RAG] Ingestion complete")
+from workers.remoteWorker import RemoteWorker
+from client.load_generator import runLoadTestAsync
+from common.config import WORKER_URLS
 
 
-# ---------------- SYSTEM SETUP ----------------
 def buildSystem():
-    workers = [
-        Worker(id=1),
-        Worker(id=2),
-        Worker(id=3)
-    ]
+    workers = []
+
+    for index, url in enumerate(WORKER_URLS, start=1):
+        worker = RemoteWorker(
+            id=index,
+            url=url,
+            maxTasks=5,
+            timeout=60
+        )
+        workers.append(worker)
 
     workerManager = WorkerManager(workers)
-    loadBalancer = LoadBalancer()
+    workerManager.refreshWorkerHealth()
+
+    loadBalancer = LoadBalancer(strategy="roundRobin")
     scheduler = Scheduler(loadBalancer, workerManager)
 
     return scheduler
 
 
-# ---------------- FAILURE SIMULATION ----------------
-async def simulateWorkerFailure(scheduler, workerId=1, delay=2):
-    await asyncio.sleep(delay)
+async def runSmallRemoteTest(scheduler):
+    print("\n[TEST] Running small remote worker test...\n")
 
-    worker = scheduler.workerManager.getWorkerById(workerId)
-    worker.fail()
-
-    print(f"\n[FAILURE] Worker {workerId} FAILED mid-test\n")
-
-
-# ---------------- CONCURRENT TEST ----------------
-async def runConcurrentTest(scheduler, numberOfRequests=20):
-    print(f"\n[TEST] Running {numberOfRequests} concurrent requests...\n")
-
-    startTime = time.time()
-    tasks = []
-
-    for i in range(numberOfRequests):
-        request = Request(
-            id=i,
-            query=f"Concurrent request {i}"
-        )
-
-        tasks.append(scheduler.handleRequestAsync(request))
-
-    # 🔥 simulate failure during execution
-    failureTask = asyncio.create_task(
-        simulateWorkerFailure(scheduler, workerId=1, delay=2)
+    responses = await runLoadTestAsync(
+        scheduler,
+        numberOfClients=10
     )
 
-    responses = await asyncio.gather(*tasks)
-    await failureTask
-
-    totalTime = time.time() - startTime
-
-    print("\n==================== RESULTS ====================")
-
-    for r in responses:
+    print("\n=== Small Test Responses ===")
+    for response in responses:
         print(
-            f"Request {r.id} | Worker {r.workerId} | "
-            f"Success: {r.success} | Latency: {r.latency:.2f}s"
+            f"Request {response.id} | "
+            f"Worker {response.workerId} | "
+            f"Success: {response.success} | "
+            f"Latency: {response.latency:.2f}s | "
+            f"Result: {response.result[:100]}"
         )
 
-    success = sum(r.success for r in responses)
-    failed = len(responses) - success
-    throughput = len(responses) / totalTime if totalTime > 0 else 0
 
-    print("\n==================== SUMMARY ====================")
-    print("Total Requests:", len(responses))
-    print("Successful:", success)
-    print("Failed:", failed)
-    print("Total Time:", round(totalTime, 2), "sec")
-    print("Throughput:", round(throughput, 2), "req/sec")
+async def main():
+    print("[SYSTEM] Starting Distributed Master")
+    print("[SYSTEM] Loading remote GPU workers...")
 
-    print("\n==================== METRICS ====================")
+    scheduler = buildSystem()
+
+    print("\n=== Initial Worker Status ===")
+    print(scheduler.workerManager.getStatusReport())
+
+    await runSmallRemoteTest(scheduler)
+
+    print("\n=== Final Scheduler Metrics ===")
     print(scheduler.getMetrics())
 
 
-# ---------------- MAIN ----------------
-def main():
-    print("[SYSTEM] Starting Distributed System Test")
-
-    setupRag()
-    scheduler = buildSystem()
-
-    asyncio.run(runConcurrentTest(scheduler, numberOfRequests=20))
-
-
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
