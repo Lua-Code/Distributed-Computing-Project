@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from workers.worker import Worker
+from common.config import USE_REAL_LLM
 
 
 app = FastAPI(title="GPU Worker Node")
@@ -25,6 +26,21 @@ class ProcessResponse(BaseModel):
     success: bool
 
 
+@app.on_event("startup")
+def startupEvent():
+    print("[SERVER] Starting GPU Worker Server...")
+
+    if USE_REAL_LLM:
+        print("[SERVER] Initializing LLM at startup...")
+
+        # Forces TaskExecutor / LLM to initialize before first request
+        worker.taskExecutor.initialize()
+
+        print("[SERVER] LLM initialized successfully")
+
+    print("[SERVER] Worker server ready")
+
+
 @app.get("/health")
 def healthCheck():
     return {
@@ -32,7 +48,8 @@ def healthCheck():
         "workerId": worker.id,
         "isAlive": worker.isAlive,
         "activeTasks": worker.activeTasks,
-        "maxTasks": worker.maxTasks
+        "maxTasks": worker.maxTasks,
+        "llmLoaded": worker.taskExecutor.isLlmLoaded()
     }
 
 

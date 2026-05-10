@@ -34,7 +34,7 @@ async def runSmallRemoteTest(scheduler):
 
     responses = await runLoadTestAsync(
         scheduler,
-        numberOfClients=10
+        numberOfClients=50
     )
 
     print("\n=== Small Test Responses ===")

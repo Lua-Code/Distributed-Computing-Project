@@ -1,4 +1,5 @@
 import time
+
 from common.config import USE_REAL_LLM, USE_RAG, SIMULATED_PROCESSING_TIME
 from common.schemas import Response
 
@@ -8,14 +9,20 @@ class TaskExecutor:
         self.workerId = workerId
         self.llm = None
 
-        if USE_REAL_LLM:
+    def initialize(self):
+        if USE_REAL_LLM and self.llm is None:
             from llm.inference import LLM
             self.llm = LLM()
+
+    def isLlmLoaded(self):
+        return self.llm is not None
 
     def execute(self, request):
         startTime = time.time()
 
         if USE_REAL_LLM:
+            self.initialize()
+
             context = ""
 
             if USE_RAG:
